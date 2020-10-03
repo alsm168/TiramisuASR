@@ -19,12 +19,12 @@ import tensorflow as tf
 
 from tiramisu_asr.models.transducer import Transducer
 from tiramisu_asr.featurizers.text_featurizers import CharFeaturizer
-from tiramisu_asr.featurizers.speech_featurizers import TFSpeechFeaturizer
+from tiramisu_asr.featurizers.speech_featurizers import TFSpeechFeaturizer, read_raw_audio
 
 text_featurizer = CharFeaturizer({
     "vocabulary": None,
     "blank_at_zero": True,
-    "beam_width": 5,
+    "beam_width": 1,
     "norm_score": True
 })
 
@@ -63,7 +63,7 @@ model.add_featurizers(
     text_featurizer=text_featurizer
 )
 
-features = tf.zeros(shape=[5, 50, 80, 1], dtype=tf.float32)
+features = tf.random.normal(shape=[1, 50, 80, 1], dtype=tf.float32)
 pred = model.recognize(features)
 print(pred)
 pred = model.recognize_beam(features)
@@ -73,7 +73,7 @@ print(pred)
 # logdir = '/tmp/logs/func/%s' % stamp
 # writer = tf.summary.create_file_writer(logdir)
 #
-# signal = read_raw_audio("/home/nlhuy/Desktop/test/11003.wav", speech_featurizer.sample_rate)
+# signal = read_raw_audio("./example.flac", speech_featurizer.sample_rate)
 #
 # tf.summary.trace_on(graph=True, profiler=True)
 # hyps = model.recognize_tflite(signal, 0, tf.zeros([1, 2, 1, 320], dtype=tf.float32))
@@ -97,30 +97,30 @@ print(pred)
 
 # print(hyps.numpy().decode("utf-8"))
 
-concrete_func = model.make_tflite_function(greedy=True).get_concrete_function()
-converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-converter.experimental_new_converter = True
-converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS,
-                                       tf.lite.OpsSet.SELECT_TF_OPS]
-tflite = converter.convert()
+# concrete_func = model.make_tflite_function(greedy=True).get_concrete_function()
+# converter = tf.lite.TFLiteConverter.from_concrete_functions([concrete_func])
+# converter.optimizations = [tf.lite.Optimize.DEFAULT]
+# converter.experimental_new_converter = True
+# converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS,
+#                                        tf.lite.OpsSet.SELECT_TF_OPS]
+# tflite = converter.convert()
 
-tflitemodel = tf.lite.Interpreter(model_content=tflite)
+# tflitemodel = tf.lite.Interpreter(model_content=tflite)
 
-input_details = tflitemodel.get_input_details()
-output_details = tflitemodel.get_output_details()
-tflitemodel.resize_tensor_input(input_details[0]["index"], signal.shape)
-tflitemodel.allocate_tensors()
-tflitemodel.set_tensor(input_details[0]["index"], signal)
-tflitemodel.set_tensor(
-    input_details[1]["index"],
-    tf.constant(text_featurizer.blank, dtype=tf.int32)
-)
-tflitemodel.set_tensor(
-    input_details[2]["index"],
-    tf.zeros([1, 1, 1, 320], dtype=tf.float32)
-)
-tflitemodel.invoke()
-hyp = tflitemodel.get_tensor(output_details[0]["index"])
+# input_details = tflitemodel.get_input_details()
+# output_details = tflitemodel.get_output_details()
+# tflitemodel.resize_tensor_input(input_details[0]["index"], signal.shape)
+# tflitemodel.allocate_tensors()
+# tflitemodel.set_tensor(input_details[0]["index"], signal)
+# tflitemodel.set_tensor(
+#     input_details[1]["index"],
+#     tf.constant(text_featurizer.blank, dtype=tf.int32)
+# )
+# tflitemodel.set_tensor(
+#     input_details[2]["index"],
+#     tf.zeros([1, 1, 1, 320], dtype=tf.float32)
+# )
+# tflitemodel.invoke()
+# hyp = tflitemodel.get_tensor(output_details[0]["index"])
 
-print(hyp)
+# print(hyp)

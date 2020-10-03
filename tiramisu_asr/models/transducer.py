@@ -14,6 +14,7 @@
 """ https://arxiv.org/pdf/1811.06621.pdf """
 
 import collections
+import numpy as np
 import tensorflow as tf
 
 from . import Model
@@ -304,7 +305,7 @@ class Transducer(Model):
         def condition(batch, total, features, decoded): return tf.less(batch, total)
 
         def body(batch, total, features, decoded):
-            yseq = self.perform_greedy(
+            yseq = self.greedy_search(
                 features[batch],
                 predicted=tf.constant(self.text_featurizer.blank, dtype=tf.int32),
                 states=self.predict_net.get_initial_state(),
@@ -343,7 +344,7 @@ class Transducer(Model):
             states: lastest rnn states with shape [num_rnns, 1 or 2, 1, P]
         """
         features = self.speech_featurizer.tf_extract(signal)
-        hypothesis = self.perform_greedy(features, predicted, states, swap_memory=False)
+        hypothesis = self.greedy_search(features, predicted, states, swap_memory=False)
         transcript = self.text_featurizer.indices2upoints(hypothesis.prediction)
         return (
             transcript,
@@ -351,7 +352,7 @@ class Transducer(Model):
             hypothesis.states
         )
 
-    def perform_greedy(self, features, predicted, states, swap_memory=False):
+    def greedy_search(self, features, predicted, states, swap_memory=False):
         with tf.name_scope(f"{self.name}_greedy"):
             encoded = self.encoder_inference(features)
             # Initialize prediction with a blank
@@ -436,7 +437,7 @@ class Transducer(Model):
         def condition(batch, total, features, decoded): return tf.less(batch, total)
 
         def body(batch, total, features, decoded):
-            yseq = tf.py_function(self.perform_beam_search,
+            yseq = tf.py_function(self.default_beam_search,
                                   inp=[features[batch], lm],
                                   Tout=tf.int32)
             yseq = self.text_featurizer.iextract(yseq)
@@ -458,12 +459,12 @@ class Transducer(Model):
 
         return decoded
 
-    def perform_beam_search(self, features, lm=False):
-        beam_width = self.text_featurizer.decoder_config["beam_width"]
-        norm_score = self.text_featurizer.decoder_config["norm_score"]
+    def default_beam_search(self, features, lm=False):
+        beam_width = self.text_featurizer.decoder_config.get("beam_width", 1)
+        norm_score = self.text_featurizer.decoder_config.get("norm_score", True)
         lm = lm.numpy()
 
-        kept_hyps = [
+        B = [
             BeamHypothesis(
                 score=0.0,
                 prediction=[self.text_featurizer.blank],
@@ -474,8 +475,6 @@ class Transducer(Model):
 
         enc = self.encoder_inference(features)
         total = tf.shape(enc)[0].numpy()
-
-        B = kept_hyps
 
         for i in range(total):  # [E]
             A = B  # A = hyps
@@ -522,15 +521,89 @@ class Transducer(Model):
 
                         A.append(beam_hyp)
 
-                if len(B) > beam_width: break
+                y_max_score = float(max(A, key=lambda x: x.score).score)
+                y_most_prob = sorted(
+                    [hyp for hyp in B if hyp.score > y_max_score],
+                    key=lambda x: x.score
+                )
+                if len(y_most_prob) >= beam_width:
+                    B = y_most_prob
+                    break
 
         if norm_score:
-            kept_hyps = sorted(B, key=lambda x: x.score / len(x.prediction),
-                               reverse=True)[:beam_width]
+            B = sorted(B, key=lambda x: x.score / len(x.prediction), reverse=True)
         else:
-            kept_hyps = sorted(B, key=lambda x: x.score, reverse=True)[:beam_width]
+            B = sorted(B, key=lambda x: x.score, reverse=True)
 
-        return tf.convert_to_tensor(kept_hyps[0].prediction, dtype=tf.int32)[None, ...]
+        return tf.convert_to_tensor(B[0].prediction, dtype=tf.int32)[None, ...]
+
+    def nsc_beam_search(self, features, lm=False):
+        """N-step constrained beam search implementation.
+
+        Based https://github.com/espnet/espnet/blob/master/espnet/nets/beam_search_transducer.py
+
+        Args:
+            features (tf.Tensor): Speech features
+            lm (bool, optional): Whether to language model. Defaults to False.
+
+        Returns:
+            indices: Predicted ids of the best beam with type tf.int32
+        """
+        beam_width = self.text_featurizer.decoder_config.get("beam_width", 1)
+        nstep = self.text_featurizer.decoder_config.get("nstep", 1)
+        prefix_alpha = self.text_featurizer.decoder_config.get("prefix_alpha", 1)
+        norm_score = self.text_featurizer.decoder_config.get("norm_score", True)
+        lm = lm.numpy()
+
+        B = [
+            BeamHypothesis(
+                score=0.0,
+                prediction=[self.text_featurizer.blank],
+                states=self.predict_net.get_initial_state(),
+                lm_states=None
+            )
+        ]
+
+        enc = self.encoder_inference(features)
+        total = tf.shape(enc)[0].numpy()
+
+        def is_prefix(x, pref):
+            if len(pref) >= len(x):
+                return False
+            for i in range(len(pref)):
+                if pref[i] != x[i]:
+                    return False
+            return True
+
+        for t in range(total):  # [E]
+            A = sorted(B, key=lambda x: len(x.prediction), reverse=True)
+            B = []
+
+            hi = tf.gather_nd(enc, tf.expand_dims(t, axis=-1))
+
+            for j in range(len(A) - 1):
+                for i in range((j + 1), len(A)):
+                    if (
+                        is_prefix(A[j].prediction, A[i].prediction)
+                        and (len(A[j].prediction) - len(A[i].prediction)) <= prefix_alpha
+                    ):
+                        next_id = len(A[i].prediction)
+                        ytu, _ = self.decoder_inference(
+                            encoded=hi,
+                            predicted=A[i].prediction[-1],
+                            states=A[i].states
+                        )
+                        curr_score = A[i].score + float(ytu[A[j].prediction[next_id]])
+
+                        for k in range(next_id, (len(A[j].prediction) - 1)):
+                            ytu, _ = self.decoder_inference(
+                                encoded=hi,
+                                predicted=A[j].prediction[k],
+                                states=A[j].states
+                            )
+                            curr_score += float(ytu[A[j].prediction[k + 1]])
+
+                        A[j].score = np.logaddexp(A[j].score, curr_score)
 
     # -------------------------------- TFLITE -------------------------------------
 

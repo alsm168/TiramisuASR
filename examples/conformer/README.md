@@ -99,6 +99,7 @@ TFLite Conversion, see `python examples/conformer/tflite_conformer.py --help`
 - Subwords corpus: all training sets, dev sets and test-clean
 - Number of parameters: 10,341,639
 - Positional Encoding Type: sinusoid concatenation
+- Beam width: 5
 
 **Pretrained and Config**, go to [drive](https://drive.google.com/drive/folders/1VAihgSB5vGXwIVTl3hkUk95joxY1YbfW?usp=sharing)
 
@@ -108,6 +109,7 @@ TFLite Conversion, see `python examples/conformer/tflite_conformer.py --help`
 
 **Error Rates**
 
-| Test-clean |  WER (%)  |  CER (%)   |
-| :--------: | :-------: | :--------: |
-|  _Greedy_  | 6.4476862 | 2.51828337 |
+|  Test-clean   |    WER (%)     |    CER (%)     |
+| :-----------: | :------------: | :------------: |
+|   _Greedy_    |   6.4476862    |   2.51828337   |
+| _Beam Search_ | **6.00642872** | **2.24940586** |
