@@ -620,20 +620,18 @@ class Transducer(Model):
             S = []
             V = []
             for n in range(nstep):
-                beam_y = tf.stack([a.predictnets[-1] for a in A], axis=1)
-                beam_logp = tf.nn.log_softmax(
-                    self.joint_net(
-                        [
-                            tf.reshape(hi, [1, 1, -1]),
-                            beam_y
-                        ],
-                        training=False
-                    )
-                )
-                beam_logp = tf.transpose(beam_logp, perm=[0, 2, 1])
-                beam_topk = tf.nn.top_k()
+                y_hat = max(A, key=lambda x: x.score)
+                A.remove(y_hat)
 
-    # -------------------------------- TFLITE -------------------------------------
+                ytu, new_states = self.decoder_inference(
+                    encoded=tf.gather_nd(encoded, tf.expand_dims(i, axis=-1)),
+                    predicted=y_hat.prediction[-1],
+                    states=y_hat.states
+                )
+
+                for i, a in enumerate(A):
+
+                    # -------------------------------- TFLITE -------------------------------------
 
     def make_tflite_function(self, greedy: bool = True):
         return tf.function(
