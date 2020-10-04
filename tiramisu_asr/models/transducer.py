@@ -30,7 +30,7 @@ Hypothesis = collections.namedtuple(
 
 BeamHypothesis = collections.namedtuple(
     "BeamHypothesis",
-    ("score", "prediction", "states", "lm_states")
+    ("score", "prediction", "states", "lm_states", "predictnets")
 )
 
 
@@ -540,7 +540,8 @@ class Transducer(Model):
     def nsc_beam_search(self, features, lm=False):
         """N-step constrained beam search implementation.
 
-        Based https://github.com/espnet/espnet/blob/master/espnet/nets/beam_search_transducer.py
+        Reference:
+        https://github.com/espnet/espnet/blob/master/espnet/nets/beam_search_transducer.py
 
         Args:
             features (tf.Tensor): Speech features
@@ -560,12 +561,13 @@ class Transducer(Model):
                 score=0.0,
                 prediction=[self.text_featurizer.blank],
                 states=self.predict_net.get_initial_state(),
+                predictnets=[],
                 lm_states=None
             )
         ]
 
-        enc = self.encoder_inference(features)
-        total = tf.shape(enc)[0].numpy()
+        encoded = self.encoder_inference(features)
+        total = tf.shape(encoded)[0].numpy()
 
         def is_prefix(x, pref):
             if len(pref) >= len(x):
@@ -579,7 +581,7 @@ class Transducer(Model):
             A = sorted(B, key=lambda x: len(x.prediction), reverse=True)
             B = []
 
-            hi = tf.gather_nd(enc, tf.expand_dims(t, axis=-1))
+            hi = tf.gather_nd(encoded, tf.expand_dims(t, axis=-1))
 
             for j in range(len(A) - 1):
                 for i in range((j + 1), len(A)):
@@ -588,22 +590,48 @@ class Transducer(Model):
                         and (len(A[j].prediction) - len(A[i].prediction)) <= prefix_alpha
                     ):
                         next_id = len(A[i].prediction)
-                        ytu, _ = self.decoder_inference(
-                            encoded=hi,
-                            predicted=A[i].prediction[-1],
-                            states=A[i].states
-                        )
-                        curr_score = A[i].score + float(ytu[A[j].prediction[next_id]])
+                        ytu = tf.squeeze(
+                            tf.nn.log_softmax(
+                                self.joint_net(
+                                    [
+                                        tf.reshape(hi, [1, 1, -1]),
+                                        A[i].predictnets[-1]
+                                    ],
+                                    training=False
+                                )
+                            ), axis=None)
+                        curr_score = A[i].score + float(ytu[A[j].prediction[next_id]].numpy())
 
                         for k in range(next_id, (len(A[j].prediction) - 1)):
-                            ytu, _ = self.decoder_inference(
-                                encoded=hi,
-                                predicted=A[j].prediction[k],
-                                states=A[j].states
-                            )
-                            curr_score += float(ytu[A[j].prediction[k + 1]])
+                            ytu = tf.squeeze(
+                                tf.nn.log_softmax(
+                                    self.joint_net(
+                                        [
+                                            tf.reshape(hi, [1, 1, -1]),
+                                            A[i].predictnets[k - 1]
+                                        ],
+                                        training=False
+                                    )
+                                ), axis=None)
+                            curr_score += float(ytu[A[j].prediction[k + 1]].numpy())
 
                         A[j].score = np.logaddexp(A[j].score, curr_score)
+
+            S = []
+            V = []
+            for n in range(nstep):
+                beam_y = tf.stack([a.predictnets[-1] for a in A], axis=1)
+                beam_logp = tf.nn.log_softmax(
+                    self.joint_net(
+                        [
+                            tf.reshape(hi, [1, 1, -1]),
+                            beam_y
+                        ],
+                        training=False
+                    )
+                )
+                beam_logp = tf.transpose(beam_logp, perm=[0, 2, 1])
+                beam_topk = tf.nn.top_k()
 
     # -------------------------------- TFLITE -------------------------------------
 
